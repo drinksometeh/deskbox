@@ -19,3 +19,7 @@ npm start
 ```
 
 測試：`npm test`
+
+## 授權
+
+MIT + [Commons Clause](https://commonsclause.com/)：可以免費使用、修改和分享，但**不得販售**，也不得拿它來收費提供產品或服務。詳見 [LICENSE](LICENSE)。
