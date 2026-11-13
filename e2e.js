@@ -141,6 +141,26 @@ async function run(main) {
   assert.equal(fs.readdirSync(dir).length, 2)
   ok('Enter opens the selection, Delete sends it to the recycle bin')
 
+  // Rearranging: the drop line marks the spot under the pointer; a drop there sticks; new files go last.
+  const labels = () => ev('[...document.querySelectorAll(".item span")].map((s) => s.textContent).join()')
+  const at = (name) => JSON.stringify(path.join(dir, name))
+  const marked = await ev(`(() => {
+    const r = document.querySelector('.item').getBoundingClientRect()
+    document.getElementById('items').dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, clientX: r.left + 2, clientY: r.top + 10 }))
+    const el = document.querySelector('.drop-before')
+    document.dispatchEvent(new DragEvent('dragleave', { relatedTarget: null }))
+    return el?.textContent + '|' + document.querySelectorAll('.drop-before').length
+  })()`)
+  assert.equal(marked, 'b.txt|0', 'drop line before the first item, gone when the drag leaves')
+  await ev(`box.drop([${at('c.txt')}], undefined, ${at('b.txt')})`)
+  await waitFor('c before b', async () => (await labels()) === 'c.txt,b.txt')
+  fs.writeFileSync(path.join(dir, 'a2.txt'), '')
+  await waitFor('new file last', async () => (await labels()) === 'c.txt,b.txt,a2.txt')
+  fs.rmSync(path.join(dir, 'a2.txt'))
+  await waitFor('back to 2 items', async () => (await count()) === 2)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ROOT, 'boxes.json'), 'utf8')).boxes[0].tabs[0].order, ['c.txt', 'b.txt'])
+  ok('drag to rearrange: drop line, order saved, new files go last')
+
   await ev('box.boxMenu()')
   await clickMenu('新增分頁')
   await waitFor('2 tabs', async () => (await ev('document.querySelectorAll(".tab").length')) === 2)
@@ -148,6 +168,20 @@ async function run(main) {
   fs.writeFileSync(path.join(tab2, 'x.txt'), '')
   await waitFor('x.txt in the new tab', async () => (await count()) === 1)
   ok('new tab from the box menu, same window (no reopen)')
+
+  // Dragging onto another tab: it glows while hovered, flashes on drop, and the refresh the drop causes keeps the flash.
+  const tabClass = () => ev('document.querySelectorAll(".tab")[0].className')
+  await ev(`document.querySelectorAll('.tab')[0].dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true }))`)
+  assert.match(await tabClass(), /drop-target/, 'hovered tab glows')
+  await ev(`document.querySelectorAll('.tab')[0].dispatchEvent(new DragEvent('dragleave'))`)
+  assert.doesNotMatch(await tabClass(), /drop-target/, 'and stops when the drag leaves')
+  await ev(`document.querySelectorAll('.tab')[0].dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }))`)
+  assert.match(await tabClass(), /dropped/, 'tab flashes on drop')
+  await m('live.get(boxes()[0].id).win.webContents.send("changed")') // the refresh a real drop triggers
+  await sleep(250)
+  assert.match(await tabClass(), /dropped/, 'a refresh mid-flash lets it finish')
+  await waitFor('flash ends by itself', async () => !/dropped/.test(await tabClass()), 3000)
+  ok('drag over a tab: glow while hovering, flash on drop')
 
   const switchMs = (i, n) =>
     ev(`(async () => {

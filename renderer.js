@@ -21,7 +21,33 @@ menu.innerHTML = ICONS.menu
 let state // from box.state()
 const lists = new Map() // tab index -> items, so a tab switch paints at once
 const selected = new Set() // selected item paths
+let dragging = new Set() // paths being dragged out of this box, until the drop is done
 const editing = () => document.querySelector('[contenteditable="true"]')
+const droppedPaths = (e) => [...e.dataTransfer.files].map(box.pathOf)
+
+// The item a drop at (x, y) lands in front of (null = the end): the first item past the pointer in reading order,
+// not counting the items being dragged.
+function dropTarget(x, y) {
+  const els = [...items.children]
+  const list = document.body.classList.contains('list')
+  let i = els.findIndex((el) => {
+    const r = el.getBoundingClientRect()
+    if (y < r.top) return true
+    if (y > r.bottom) return false
+    return list ? y < r.top + r.height / 2 : x < r.left + r.width / 2
+  })
+  if (i < 0) i = els.length
+  while (i < els.length && dragging.has(els[i].dataset.path)) i++
+  return els[i] ?? null
+}
+function clearDrop() {
+  for (const el of items.querySelectorAll('.drop-before, .drop-after')) el.classList.remove('drop-before', 'drop-after')
+}
+function showDrop(before) {
+  clearDrop()
+  if (before) before.classList.add('drop-before')
+  else items.lastElementChild?.classList.add('drop-after')
+}
 
 function paintSelection() {
   for (const el of items.children) el.classList.toggle('selected', selected.has(el.dataset.path))
@@ -56,9 +82,13 @@ function itemEl(it) {
     if (!selected.has(it.path)) selectOnly([it.path])
     box.itemMenu([...selected])
   }
-  el.ondragstart = (e) => {
+  el.ondragstart = async (e) => {
     e.preventDefault() // hand over to a native drag so files can go to other boxes, the desktop or Explorer
-    box.startDrag([...selected], it.icon)
+    const paths = [...items.children].map((c) => c.dataset.path).filter((p) => selected.has(p)) // keep their order
+    dragging = new Set(paths)
+    await box.startDrag(paths, it.icon)
+    dragging = new Set()
+    clearDrop()
   }
   return el
 }
@@ -69,16 +99,28 @@ function tabEl(name, i) {
   el.textContent = name
   el.onclick = () => switchTab(i)
   el.ondblclick = () => editInline(el, name, (v) => box.renameTab(i, v))
-  el.ondragover = (e) => e.preventDefault()
+  // Dragging onto a tab: it glows while the pointer is over it and flashes once the items land in it.
+  const takes = () => !(dragging.size && i === state.active) // items dragged out of this tab onto itself go nowhere
+  el.ondragover = (e) => {
+    e.preventDefault()
+    clearDrop()
+    if (takes()) el.classList.add('drop-target')
+  }
+  el.ondragleave = () => el.classList.remove('drop-target')
   el.ondrop = (e) => {
     e.preventDefault()
     e.stopPropagation()
-    box.drop([...e.dataTransfer.files], i)
+    el.classList.remove('drop-target')
+    if (!takes()) return
+    for (const c of [...items.children]) if (dragging.has(c.dataset.path)) c.remove() // they're leaving this tab
+    el.classList.add('dropped')
+    el.addEventListener('animationend', () => el.classList.remove('dropped'), { once: true })
+    box.drop(droppedPaths(e), i)
   }
   return el
 }
 
-function paintHeader() {
+function paintHeader(tabsChanged) {
   document.body.classList.toggle('collapsed', state.collapsed)
   document.body.classList.toggle('list', state.view === 'list')
   title.textContent = state.name
@@ -89,7 +131,9 @@ function paintHeader() {
   lock.innerHTML = state.locked ? ICONS.locked : ICONS.unlocked
   lock.title = state.locked ? '解除鎖定位置' : '鎖定位置'
   tabs.hidden = state.tabs.length < 2
-  tabs.replaceChildren(...state.tabs.map(tabEl))
+  // Rebuild the tabs only when they changed, so a running drop flash isn't cut off by the refresh the drop causes.
+  if (tabsChanged) tabs.replaceChildren(...state.tabs.map(tabEl))
+  else [...tabs.children].forEach((el, j) => el.classList.toggle('active', j === state.active))
 }
 
 async function loadTab(i) {
@@ -114,8 +158,9 @@ async function refresh() {
   if (editing()) return // don't wipe a rename in progress
   const before = state?.tabs.join('\n')
   state = await box.state()
-  if (state.tabs.join('\n') !== before) lists.clear() // tabs added/removed/renamed: cached indexes no longer line up
-  paintHeader()
+  const tabsChanged = state.tabs.join('\n') !== before
+  if (tabsChanged) lists.clear() // tabs added/removed/renamed: cached indexes no longer line up
+  paintHeader(tabsChanged)
   if (state.collapsed) return
   await loadTab(state.active)
   // refresh the other tabs in the background so switching shows current content at once
@@ -207,7 +252,21 @@ document.addEventListener('contextmenu', (e) => {
   box.boxMenu()
 })
 document.addEventListener('dragover', (e) => e.preventDefault())
+document.addEventListener('dragleave', (e) => e.relatedTarget || clearDrop()) // pointer left the window
 document.addEventListener('drop', (e) => {
   e.preventDefault()
-  box.drop([...e.dataTransfer.files])
+  box.drop(droppedPaths(e)) // on the title bar: file it, no position
+})
+items.addEventListener('dragover', (e) => {
+  e.preventDefault()
+  showDrop(dropTarget(e.clientX, e.clientY))
+})
+items.addEventListener('drop', (e) => {
+  e.preventDefault()
+  e.stopPropagation()
+  const before = dropTarget(e.clientX, e.clientY)
+  clearDrop()
+  // Rearranging inside this box: move the icons now instead of waiting for the reload.
+  for (const el of [...items.children]) if (dragging.has(el.dataset.path)) items.insertBefore(el, before)
+  box.drop(droppedPaths(e), undefined, before?.dataset.path ?? '')
 })

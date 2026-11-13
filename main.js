@@ -346,12 +346,19 @@ ipcMain.handle('state', (e) => {
   return { name, tabs: tabs.map((t) => t.name), active, collapsed: !!collapsed, locked: !!locked, view: view ?? 'grid' }
 })
 
+// A tab shows its items in the order the user dragged them into; items never placed follow, in folder order.
+function ordered(t, files) {
+  const at = new Map((t.order ?? []).map((f, i) => [f, i]))
+  return files.sort((a, b) => (at.get(a) ?? Infinity) - (at.get(b) ?? Infinity) || 0)
+}
+
 ipcMain.handle('list', async (e, tab) => {
   const box = boxOf(e.sender)
-  const dir = box.tabs[tab ?? box.active]?.dir
+  const t = box.tabs[tab ?? box.active]
+  const dir = t?.dir
   if (!dir) return []
   if (!fs.existsSync(dir)) return []
-  const files = fs.readdirSync(dir).filter(visible)
+  const files = ordered(t, fs.readdirSync(dir).filter(visible))
   return Promise.all(
     files.map(async (f) => {
       const p = path.join(dir, f)
@@ -362,10 +369,18 @@ ipcMain.handle('list', async (e, tab) => {
 
 ipcMain.handle('open', (e, p) => shell.openPath(p))
 
-ipcMain.handle('drop', (e, paths, tab) => {
+// before: path of the item the drop landed in front of, '' for the end, undefined when dropped on a tab (no position).
+ipcMain.handle('drop', (e, paths, tab, before) => {
   const box = boxOf(e.sender)
-  const dir = box.tabs[tab ?? box.active].dir
-  for (const p of paths) moveInto(p, dir)
+  const t = box.tabs[tab ?? box.active]
+  const moved = paths.map((p) => path.basename(moveInto(p, t.dir)))
+  if (before == null) return
+  const rest = ordered(t, fs.readdirSync(t.dir).filter(visible)).filter((f) => !moved.includes(f))
+  const i = rest.indexOf(path.basename(before))
+  rest.splice(i < 0 ? rest.length : i, 0, ...moved)
+  t.order = rest
+  save()
+  notify(box) // a reorder inside one folder changes no files, so no watcher fires
 })
 
 ipcMain.handle('switch-tab', (e, i) => {
@@ -406,7 +421,7 @@ ipcMain.handle('item-menu', (e, paths) => {
 })
 
 let dragIcon // app icon, for drags whose item icon can't be turned into an image (the SVG folder)
-ipcMain.on('start-drag', (e, paths, iconUrl) => {
+ipcMain.handle('start-drag', (e, paths, iconUrl) => {
   const icon = nativeImage.createFromDataURL(iconUrl)
   e.sender.startDrag({ file: paths[0], files: paths, icon: icon.isEmpty() ? dragIcon : icon.resize({ width: 32 }) })
   // Returns once the drop is done. Items dropped on the desktop were put there on purpose: don't auto-file them back.
