@@ -104,7 +104,7 @@ function switchTab(i) {
   if (i === state.active) return
   state.active = i
   selected.clear()
-  paintHeader()
+  ;[...tabs.children].forEach((el, j) => el.classList.toggle('active', j === i)) // keep the tab elements so a double-click (rename) still lands
   items.replaceChildren(...(lists.get(i) ?? []).map(itemEl)) // cached copy now, fresh copy below
   box.switchTab(i)
   loadTab(i)
@@ -112,9 +112,14 @@ function switchTab(i) {
 
 async function refresh() {
   if (editing()) return // don't wipe a rename in progress
+  const before = state?.tabs.join('\n')
   state = await box.state()
+  if (state.tabs.join('\n') !== before) lists.clear() // tabs added/removed/renamed: cached indexes no longer line up
   paintHeader()
-  if (!state.collapsed) await loadTab(state.active)
+  if (state.collapsed) return
+  await loadTab(state.active)
+  // refresh the other tabs in the background so switching shows current content at once
+  state.tabs.forEach((_, i) => i !== state.active && box.list(i).then((l) => lists.set(i, l)))
 }
 
 function editInline(el, current, commit) {
@@ -188,16 +193,9 @@ document.addEventListener('keydown', (e) => {
 let timer
 box.onChange(() => {
   clearTimeout(timer)
-  timer = setTimeout(() => {
-    lists.clear() // files changed: every cached tab may be stale
-    refresh()
-  }, 100) // fs.watch fires several times per change
+  timer = setTimeout(refresh, 100) // fs.watch fires several times per change
 })
-
-refresh().then(() => {
-  // warm the other tabs so the first switch is instant too
-  state.tabs.forEach((_, i) => i !== state.active && box.list(i).then((l) => lists.set(i, l)))
-})
+refresh()
 
 title.ondblclick = () => editInline(title, title.textContent, box.renameBox)
 fold.onclick = () => box.toggleCollapse()

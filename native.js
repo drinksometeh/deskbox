@@ -4,6 +4,7 @@ const koffi = require('koffi')
 const user32 = koffi.load('user32.dll')
 const dwmapi = koffi.load('dwmapi.dll')
 const kernel32 = koffi.load('kernel32.dll')
+const comctl32 = koffi.load('comctl32.dll')
 
 const POINT = koffi.struct('POINT', { x: 'int32', y: 'int32' })
 const MSLLHOOKSTRUCT = koffi.struct('MSLLHOOKSTRUCT', {
@@ -16,6 +17,11 @@ const MSLLHOOKSTRUCT = koffi.struct('MSLLHOOKSTRUCT', {
 const ACCENT_POLICY = koffi.struct('ACCENT_POLICY', { state: 'int32', flags: 'int32', color: 'uint32', animation: 'int32' })
 const WCA_DATA = koffi.struct('WCA_DATA', { attrib: 'int32', data: 'void *', size: 'size_t' })
 const HookProc = koffi.proto('intptr __stdcall HookProc(int code, uintptr wParam, void *lParam)')
+const WINDOWPOS = koffi.struct('WINDOWPOS', { hwnd: 'intptr', after: 'intptr', x: 'int', y: 'int', cx: 'int', cy: 'int', flags: 'uint32' })
+const SubclassProc = koffi.proto('intptr __stdcall SubclassProc(intptr hwnd, uint32 msg, uintptr wp, void *lp, uintptr id, uintptr data)')
+const SetWindowSubclass = comctl32.func('bool __stdcall SetWindowSubclass(intptr hwnd, SubclassProc *proc, uintptr id, uintptr data)')
+const RemoveWindowSubclass = comctl32.func('bool __stdcall RemoveWindowSubclass(intptr hwnd, SubclassProc *proc, uintptr id)')
+const DefSubclassProc = comctl32.func('intptr __stdcall DefSubclassProc(intptr hwnd, uint32 msg, uintptr wp, void *lp)')
 
 const FindWindowW = user32.func('intptr __stdcall FindWindowW(str16 cls, str16 name)')
 const FindWindowExW = user32.func('intptr __stdcall FindWindowExW(intptr parent, intptr after, str16 cls, str16 name)')
@@ -48,9 +54,28 @@ function setHeight(buf, physicalHeight) {
 
 const hasDesktop = () => FindWindowW('Progman', null) !== 0
 
-// Owned by the desktop window: sits just above the desktop and survives Win+D.
+// Clicking a window brings it above every app. For a box, rewrite each z-order change Windows is about to make
+// into "send to bottom" (still above its owner, the desktop) so it stays behind apps, focused or not.
+const stayBehind = koffi.register((hwnd, msg, wp, lp) => {
+  try {
+    if (msg === 0x46 /* WM_WINDOWPOSCHANGING */) {
+      const pos = koffi.decode(lp, WINDOWPOS)
+      if (!(pos.flags & 0x4) /* SWP_NOZORDER */ && pos.after !== 1) {
+        pos.after = 1 // HWND_BOTTOM
+        koffi.encode(lp, WINDOWPOS, pos)
+      }
+    }
+    if (msg === 0x82 /* WM_NCDESTROY */) RemoveWindowSubclass(hwnd, stayBehind, 1)
+  } catch {} // a throw inside a window procedure would take the app down
+  return DefSubclassProc(hwnd, msg, wp, lp)
+}, koffi.pointer(SubclassProc))
+
+// Owned by the desktop window (sits just above it, survives Win+D) and kept behind every app window.
 function pinToDesktop(buf) {
-  SetWindowLongPtrW(handle(buf), -8 /* GWLP_HWNDPARENT */, FindWindowW('Progman', null))
+  const hwnd = handle(buf)
+  SetWindowLongPtrW(hwnd, -8 /* GWLP_HWNDPARENT */, FindWindowW('Progman', null))
+  SetWindowSubclass(hwnd, stayBehind, 1, 0)
+  SetWindowPos(hwnd, 1 /* HWND_BOTTOM */, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010) // NOSIZE|NOMOVE|NOACTIVATE
 }
 
 // Blurs what's behind the window. Unlike Electron's backgroundMaterial it keeps blurring while the window is inactive.

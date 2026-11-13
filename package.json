@@ -1,17 +1,55 @@
 {
   "name": "deskbox",
+  "productName": "DeskBox",
   "version": "0.2.0",
+  "description": "Windows desktop organizer boxes",
+  "author": "drinksometeh",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test"
+    "test": "node --test",
+    "e2e": "node e2e.js",
+    "dist": "electron-builder --win nsis"
   },
   "dependencies": {
     "koffi": "^2.8.0"
   },
   "devDependencies": {
-    "electron": "33.2.0"
+    "electron": "33.2.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.drinksometeh.deskbox",
+    "productName": "DeskBox",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "box.html",
+      "fsutil.js",
+      "lnk.js",
+      "native.js",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/koffi/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DeskBox"
+    }
   }
 }

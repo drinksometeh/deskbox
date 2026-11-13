@@ -5,9 +5,12 @@ const { category, freePath, isGameShortcut, moveInto } = require('./fsutil')
 const { readLnk } = require('./lnk')
 const native = require('./native')
 
-const ROOT = path.join(app.getPath('home'), 'DeskBox') // every tab is a real folder in here
+// Test seam (see e2e.js): run against temp folders instead of the real desktop.
+const TEST = !!process.env.DESKBOX_ROOT
+const ROOT = process.env.DESKBOX_ROOT || path.join(app.getPath('home'), 'DeskBox') // every tab is a real folder in here
 const CONFIG = path.join(ROOT, 'boxes.json')
-const DESKTOP = app.getPath('desktop')
+const DESKTOP = process.env.DESKBOX_DESKTOP || app.getPath('desktop')
+if (TEST) app.setPath('userData', path.join(ROOT, '.electron')) // own single-instance lock, so it runs beside the real one
 const HIDDEN = new Set(['desktop.ini', 'thumbs.db'])
 const HEADER = 30 // collapsed height = title bar + border, see box.html
 const LOGIN = { name: 'DeskBox', path: process.execPath, args: app.isPackaged ? [] : [app.getAppPath()] }
@@ -20,16 +23,18 @@ const DOC_TABS = [
   ['图片', '圖片'],
 ]
 const STILL_WRITING = /\.(crdownload|part|download|tmp)$|^~\$/i // downloads in progress, Office lock files
+const GRACE = 10000 // leave new desktop items alone this long: a new folder may still be getting its name typed
 
 let boxes = [] // saved state, see load()
 let autoOrganize = true // file new desktop items into boxes automatically
+let startupChosen = false // set once the installed app has turned on start-at-login the first time
 let keep = new Set() // desktop names the user moved back on purpose; auto-organize leaves them alone
 const live = new Map() // box id -> { win, watchers }
 let iconsHidden = false
 let tray
 
 const visible = (f) => !f.startsWith('.') && !HIDDEN.has(f.toLowerCase())
-const save = () => fs.writeFileSync(CONFIG, JSON.stringify({ autoOrganize, keep: [...keep], boxes }, null, 2))
+const save = () => fs.writeFileSync(CONFIG, JSON.stringify({ autoOrganize, startupChosen, keep: [...keep], boxes }, null, 2))
 const toDesktop = (p) => {
   keep.add(path.basename(moveInto(p, DESKTOP)))
   save()
@@ -47,6 +52,7 @@ function load() {
   if (!fs.existsSync(CONFIG)) return []
   const data = JSON.parse(fs.readFileSync(CONFIG, 'utf8'))
   autoOrganize = data.autoOrganize ?? true
+  startupChosen = data.startupChosen ?? false
   keep = new Set(data.keep ?? [])
   if (Array.isArray(data.boxes)) return data.boxes
   // v0.1 saved { [boxName]: bounds } and kept the box's files in DeskBox/<boxName>
@@ -133,7 +139,8 @@ function openBox(box) {
   }
   win.on('moved', remember)
   win.on('resized', remember)
-  const watchers = box.tabs.filter((t) => fs.existsSync(t.dir)).map((t) => fs.watch(t.dir, () => notify(box)))
+  const watchers = new Map() // tab dir -> fs.FSWatcher
+  for (const t of box.tabs) watchTab(box, watchers, t)
   win.on('closed', () => {
     if (live.get(box.id)?.win !== win) return // closed on purpose by closeBox()
     watchers.forEach((w) => w.close())
@@ -142,6 +149,10 @@ function openBox(box) {
     reopenWhenDesktopIsBack(box)
   })
   live.set(box.id, { win, watchers })
+}
+
+function watchTab(box, watchers, t) {
+  if (!watchers.has(t.dir) && fs.existsSync(t.dir)) watchers.set(t.dir, fs.watch(t.dir, () => notify(box)))
 }
 
 function reopenWhenDesktopIsBack(box) {
@@ -177,11 +188,12 @@ function newBox(name, tabNames = ['預設']) {
 }
 
 function addTab(box, tab) {
+  if (!tab.mapped) fs.mkdirSync(tab.dir, { recursive: true })
   box.tabs.push(tab)
   box.active = box.tabs.length - 1
   save()
-  closeBox(box)
-  openBox(box)
+  watchTab(box, live.get(box.id).watchers, tab)
+  notify(box)
 }
 
 // Moves a tab's items to the desktop; optionally removes its folder once empty. Mapped folders are never touched.
@@ -199,12 +211,14 @@ async function deleteTab(box, i) {
   const t = box.tabs[i]
   const detail = t.mapped ? '只移除這個分頁，資料夾本身不會被動到。' : '分頁裡的東西會先移回桌面。'
   if (!(await confirm(box, `刪除分頁「${t.name}」？`, detail, '刪除'))) return
-  closeBox(box)
+  const { watchers } = live.get(box.id)
+  watchers.get(t.dir)?.close() // Windows keeps watched folders locked
+  watchers.delete(t.dir)
   emptyTab(t, true)
   box.tabs.splice(i, 1)
   box.active = 0
   save()
-  openBox(box)
+  notify(box)
 }
 
 async function deleteBox(box) {
@@ -278,7 +292,8 @@ function sweepDesktop() {
     if (keep.has(f)) continue
     const p = path.join(DESKTOP, f)
     try {
-      if (STILL_WRITING.test(f) || Date.now() - fs.statSync(p).mtimeMs < 3000) throw new Error('busy')
+      const { mtimeMs, birthtimeMs } = fs.statSync(p)
+      if (STILL_WRITING.test(f) || Date.now() - Math.max(mtimeMs, birthtimeMs) < GRACE) throw new Error('busy')
       moveInto(p, tabFor(kindOf(p)).dir)
     } catch {
       left++
@@ -288,9 +303,9 @@ function sweepDesktop() {
 }
 
 let sweepTimer
-function scheduleSweep(delay = 3000) {
+function scheduleSweep(delay = 1000) {
   clearTimeout(sweepTimer)
-  sweepTimer = setTimeout(() => autoOrganize && sweepDesktop() && scheduleSweep(10000), delay) // retry leftovers later
+  sweepTimer = setTimeout(() => autoOrganize && sweepDesktop() && scheduleSweep(GRACE), delay) // retry leftovers later
 }
 
 async function organizeDesktop() {
@@ -375,7 +390,7 @@ ipcMain.handle('item-menu', (e, paths) => {
 let dragIcon // app icon, for drags whose item icon can't be turned into an image (the SVG folder)
 ipcMain.on('start-drag', (e, paths, iconUrl) => {
   const icon = nativeImage.createFromDataURL(iconUrl)
-  e.sender.startDrag({ files: paths, icon: icon.isEmpty() ? dragIcon : icon.resize({ width: 32 }) })
+  e.sender.startDrag({ file: paths[0], files: paths, icon: icon.isEmpty() ? dragIcon : icon.resize({ width: 32 }) })
   // Returns once the drop is done. Items dropped on the desktop were put there on purpose: don't auto-file them back.
   for (const p of paths) if (!fs.existsSync(p) && fs.existsSync(path.join(DESKTOP, path.basename(p)))) keep.add(path.basename(p))
   save()
@@ -415,12 +430,21 @@ app.whenReady().then(async () => {
   boxes = load()
   if (boxes.length) boxes.forEach((b) => openBox(b))
   else newBox('盒子')
-  native.setDesktopIconsVisible(true) // in case a previous run died while they were hidden
-  native.onDesktopDoubleClick(toggleDesktop)
+  if (TEST) global.__deskbox = { live, fs, electron: require('electron'), boxes: () => boxes, keep: () => keep }
+  else {
+    native.setDesktopIconsVisible(true) // in case a previous run died while they were hidden
+    native.onDesktopDoubleClick(toggleDesktop)
+  }
   // ponytail: only the user's own desktop; shortcuts installers drop on the all-users desktop need admin to move
   fs.watch(DESKTOP, () => scheduleSweep())
   scheduleSweep(0)
 
+  if (app.isPackaged && !startupChosen && !TEST) {
+    // First run of the installed app: start with Windows. The tray checkbox turns it off for good.
+    app.setLoginItemSettings({ ...LOGIN, openAtLogin: true })
+    startupChosen = true
+    save()
+  }
   dragIcon = await app.getFileIcon(process.execPath)
   tray = new Tray(dragIcon)
   tray.setToolTip('DeskBox')
