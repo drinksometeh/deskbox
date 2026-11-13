@@ -439,6 +439,11 @@ ipcMain.handle('box-menu', (e) => {
   ]).popup({ window: win })
 })
 
+// Boxes are small static pages and the blur is drawn by Windows (DWM), so skip the GPU and let every box share
+// one renderer process: ~300 MB -> ~170 MB. ponytail: one box's renderer crashing now blanks them all.
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('process-per-site') // every box is file://box.html, so one site, one process
+
 if (!app.requestSingleInstanceLock()) app.exit()
 app.on('window-all-closed', () => {}) // keep running in the tray
 app.on('will-quit', () => native.setDesktopIconsVisible(true)) // never leave the desktop without icons
