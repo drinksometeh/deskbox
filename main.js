@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, screen, nativeImage } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { category, freePath, isGameShortcut, moveInto } = require('./fsutil')
+const { category, freePath, shortcutKind, moveInto } = require('./fsutil')
 const { readLnk } = require('./lnk')
 const native = require('./native')
 
@@ -22,6 +22,20 @@ const DOC_TABS = [
   ['其它', '其它'],
   ['图片', '圖片'],
 ]
+// Boxes auto-organize creates when a kind has no tab yet: box name -> [tab name, kind]
+const GROUPS = {
+  游戏: [
+    ['游戏', 'game'],
+    ['平台', 'platform'],
+  ],
+  应用: [
+    ['常用', 'daily'],
+    ['开发', 'dev'],
+    ['设计', 'design'],
+    ['工具', 'tools'],
+  ],
+  文档: DOC_TABS,
+}
 const STILL_WRITING = /\.(crdownload|part|download|tmp)$|^~\$/i // downloads in progress, Office lock files
 const GRACE = 10000 // leave new desktop items alone this long: a new folder may still be getting its name typed
 
@@ -139,6 +153,8 @@ function openBox(box) {
   }
   win.on('moved', remember)
   win.on('resized', remember)
+  // Boxes never minimize: undo Win+M, or a launcher that asked for a minimized start.
+  win.on('minimize', () => win.showInactive())
   const watchers = new Map() // tab dir -> fs.FSWatcher
   for (const t of box.tabs) watchTab(box, watchers, t)
   win.on('closed', () => {
@@ -259,25 +275,27 @@ function shortcutTarget(p) {
   }
 }
 
-// Where a desktop item belongs: game shortcuts -> 'game' tab, other shortcuts -> 'app' tab, files/folders -> their DOC_TABS kind.
+// Where a desktop item belongs: shortcuts by shortcutKind (game, platform, daily, dev, design, tools),
+// files/folders by their DOC_TABS kind.
 function kindOf(p) {
-  if (/\.(lnk|url)$/i.test(p)) return isGameShortcut(shortcutTarget(p)) ? 'game' : 'app'
+  if (/\.(lnk|url)$/i.test(p)) return shortcutKind(`${path.basename(p).replace(/\.(lnk|url)$/i, '')} ${shortcutTarget(p)}`)
   const k = category(p)
   return k === '程式' ? '其它' : k // loose .exe files go with the other files, like Coodesker did
 }
 
-// The tab that collects a kind; creates its box the first time it's needed.
+// The tab that collects a kind. If it's missing, add it to its group's box, or create that box with all its tabs.
 function tabFor(kind) {
-  const tab = boxes.flatMap((b) => b.tabs).find((t) => t.kind === kind)
-  if (tab) return tab
-  if (kind === 'game' || kind === 'app') {
-    const box = newBox(kind === 'game' ? '游戏' : '应用')
-    box.tabs[0].kind = kind
-    save()
-    return box.tabs[0]
+  const found = boxes.flatMap((b) => b.tabs).find((t) => t.kind === kind)
+  if (found) return found
+  const [boxName, group] = Object.entries(GROUPS).find(([, g]) => g.some(([, k]) => k === kind))
+  const home = boxes.find((b) => b.tabs.some((t) => group.some(([, k]) => k === t.kind)))
+  if (home) {
+    const [tabName] = group.find(([, k]) => k === kind)
+    addTab(home, { name: tabName, dir: freePath(ROOT, `${home.name}・${tabName}`), kind })
+    return home.tabs.at(-1)
   }
-  const box = newBox('文档', DOC_TABS.map(([name]) => name))
-  box.tabs.forEach((t, i) => (t.kind = DOC_TABS[i][1]))
+  const box = newBox(boxName, group.map(([name]) => name))
+  box.tabs.forEach((t, i) => (t.kind = group[i][1]))
   save()
   return box.tabs.find((t) => t.kind === kind)
 }

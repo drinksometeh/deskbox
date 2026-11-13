@@ -236,6 +236,11 @@ async function run(main) {
   assert.ok(fs.existsSync(path.join(DESKTOP, 'b.txt')), 'item moved back on purpose stays on the desktop')
   ok('auto-organize: game / document / folder filed, moved-back item left alone')
 
+  // Last of the window checks: after an un-minimize, Windows' focus-stealing guard blocks programmatic focus().
+  await m('live.get(boxes()[0].id).win.minimize()')
+  await waitFor('box un-minimizes itself', async () => !(await m('return live.get(boxes()[0].id).win.isMinimized()')))
+  ok('a minimized box restores itself')
+
   const tabDirs = await m(`return boxes().find((b) => b.name === '工具箱').tabs.map((t) => t.dir)`)
   await ev('box.boxMenu()')
   await clickMenu('刪除盒子')

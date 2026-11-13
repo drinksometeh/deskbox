@@ -17,8 +17,20 @@ function category(p) {
 // Game shortcut = store launch URL (Steam/Epic/Ubisoft), something installed under a games/launcher folder, or an emulator.
 // ponytail: keyword heuristic; a game installed somewhere else lands in the apps box until dragged over.
 const GAME =
-  /^(steam:\/\/rungameid|com\.epicgames\.launcher:|uplay:)|\\(steam|steamapps|steamlibrary|epic games|ubisoft[^\\]*|games)\\|ryujinx|yuzu|citra|mgba|pcsx2|rpcs3|dolphin|cemu|--application-id/i
+  /(steam:\/\/rungameid|com\.epicgames\.launcher:|uplay:)|\\(steam|steamapps|steamlibrary|epic games|ubisoft[^\\]*|games)\\|ryujinx|yuzu|citra|mgba|pcsx2|rpcs3|dolphin|cemu|--application-id/i
 const isGameShortcut = (target) => GAME.test(target)
+
+// Which tab a shortcut goes to, tested against "<shortcut name> <target> <args>"; first match wins, the rest are 'tools'.
+// ponytail: keyword lists; an app nobody listed lands in 'tools' until dragged elsewhere.
+const SHORTCUT_RULES = [
+  ['tools', /wallpaper engine|rungameid\/431960/i], // a Steam app, but not a game
+  ['platform', /\\steam\.exe|epicgameslauncher|ubisoftconnect|\\upc\.exe|battle\.net|eadesktop|galaxyclient|wemod|\\wand\.exe|cheat engine/i],
+  ['game', GAME],
+  ['dev', /\\code\.exe|cursor|github|gitextensions|git bash|docker|postman|filezilla|android studio|jetbrains|idea64|pycharm|webstorm|python|node\.js|terminal|ngrok|claude|pixel agents|xampp|hxd|notepad\+\+|kdiff/i],
+  ['design', /photoshop|illustrator|premiere|after effects|blender|figma|rive|clipchamp|obs64|录屏|apowerrec/i],
+  ['daily', /\\chrome\.exe|msedge|firefox|discord|messenger|whatsapp|telegram|unigram|slack|teams|spotify|grok|moomoo|outlook/i],
+]
+const shortcutKind = (text) => SHORTCUT_RULES.find(([, re]) => re.test(text))?.[0] ?? 'tools'
 
 // First free name in dir: "a.txt", then "a (2).txt", "a (3).txt", ...
 function freePath(dir, base) {
@@ -42,4 +54,4 @@ function moveInto(src, dir) {
   return dest
 }
 
-module.exports = { category, freePath, isGameShortcut, moveInto }
+module.exports = { category, freePath, isGameShortcut, shortcutKind, moveInto }

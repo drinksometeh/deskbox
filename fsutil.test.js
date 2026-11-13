@@ -3,7 +3,7 @@ const assert = require('node:assert')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { category, isGameShortcut, moveInto } = require('./fsutil')
+const { category, isGameShortcut, shortcutKind, moveInto } = require('./fsutil')
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'deskbox-'))
 
@@ -56,4 +56,19 @@ test('isGameShortcut tells games from apps', () => {
   ]
   assert.deepStrictEqual(games.filter((t) => !isGameShortcut(t)), [])
   assert.deepStrictEqual(apps.filter(isGameShortcut), [])
+})
+
+test('shortcutKind sorts shortcuts into tabs', () => {
+  const cases = {
+    'Deadlock steam://rungameid/1422450 ': 'game',
+    'Steam D:\\Program Files\\steam\\Steam.exe ': 'platform',
+    'Wand (WeMod) C:\\Users\\me\\AppData\\Local\\WeMod\\Wand.exe ': 'platform',
+    'Wallpaper Engine steam://rungameid/431960 ': 'tools',
+    'Visual Studio Code C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe ': 'dev',
+    'Adobe Photoshop 2020 C:\\Program Files\\Adobe\\Adobe Photoshop 2020\\Photoshop.exe ': 'design',
+    'Google Chrome C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe --source-shortcut-location=desktop': 'daily',
+    'Chrome Remote Desktop C:\\Program Files\\Google\\Chrome\\Application\\chrome_proxy.exe --app-id=efm': 'tools',
+    'WizTree C:\\Program Files\\WizTree\\WizTree64.exe ': 'tools',
+  }
+  for (const [text, kind] of Object.entries(cases)) assert.strictEqual(shortcutKind(text), kind, text)
 })
