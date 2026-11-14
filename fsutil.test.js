@@ -3,9 +3,30 @@ const assert = require('node:assert')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { category, isGameShortcut, shortcutKind, moveInto } = require('./fsutil')
+const { category, isGameShortcut, shortcutKind, moveInto, writeAtomic, readJson } = require('./fsutil')
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'deskbox-'))
+
+test('a damaged settings file falls back to the last good copy', () => {
+  const tmp = tmpDir()
+  const file = path.join(tmp, 'boxes.json')
+  assert.deepStrictEqual(readJson(file), {}) // first run
+
+  writeAtomic(file, '{"n":1}')
+  assert.deepStrictEqual(readJson(file), { data: { n: 1 } }) // and that read is now the backup
+  writeAtomic(file, '{"n":2}')
+  assert.ok(!fs.existsSync(`${file}.tmp`))
+
+  fs.writeFileSync(file, '') // what a power cut mid-write used to leave
+  assert.deepStrictEqual(readJson(file), { data: { n: 1 }, damaged: true })
+  assert.strictEqual(fs.readFileSync(`${file}.broken`, 'utf8'), '') // kept for a look, out of the way
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{"n":1}') // back in place, even if nothing saves before the next start
+
+  fs.writeFileSync(file, '{')
+  fs.writeFileSync(`${file}.bak`, '{')
+  assert.deepStrictEqual(readJson(file), { damaged: true }) // nothing usable: start fresh
+  fs.rmSync(tmp, { recursive: true })
+})
 
 test('moveInto never overwrites and leaves nothing behind', () => {
   const tmp = tmpDir()

@@ -54,4 +54,43 @@ function moveInto(src, dir) {
   return dest
 }
 
-module.exports = { category, freePath, isGameShortcut, shortcutKind, moveInto }
+// Replaces file in one step: write a temp file, flush it to disk, rename it over. A crash or power cut mid-save leaves
+// the old content or the new, never half.
+function writeAtomic(file, text) {
+  const tmp = `${file}.tmp`
+  const fd = fs.openSync(tmp, 'w')
+  try {
+    fs.writeFileSync(fd, text)
+    fs.fsyncSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+  try {
+    fs.renameSync(tmp, file)
+  } catch {
+    fs.writeFileSync(file, text) // rename blocked for a moment (antivirus scanning the temp file): write in place, as before
+  }
+}
+
+// Reads a JSON file. A good read is copied to file.bak; an unreadable file is set aside as file.broken and file.bak
+// read instead. Returns { data, damaged }; data is undefined when there's nothing usable (or no file yet).
+function readJson(file) {
+  if (!fs.existsSync(file)) return {}
+  let data
+  try {
+    data = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    fs.renameSync(file, `${file}.broken`)
+    try {
+      const data = JSON.parse(fs.readFileSync(`${file}.bak`, 'utf8'))
+      fs.copyFileSync(`${file}.bak`, file) // or a quit before the next save would make the next start look like a first run
+      return { data, damaged: true }
+    } catch {
+      return { damaged: true }
+    }
+  }
+  fs.copyFileSync(file, `${file}.bak`)
+  return { data }
+}
+
+module.exports = { category, freePath, isGameShortcut, shortcutKind, moveInto, writeAtomic, readJson }

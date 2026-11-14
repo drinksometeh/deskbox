@@ -169,6 +169,19 @@ async function run(main) {
   await waitFor('x.txt in the new tab', async () => (await count()) === 1)
   ok('new tab from the box menu, same window (no reopen)')
 
+  // A drop that can't move a file (in use, gone) skips just that one, and still repaints so icons taken out early come back.
+  const missing = JSON.stringify(path.join(tmp, 'missing.txt'))
+  await ev(`document.querySelector('.item').remove()`)
+  await ev(`box.drop([${missing}], 1)`)
+  await waitFor('icon back after a failed drop', async () => (await count()) === 1)
+  const y = path.join(tmp, 'y.txt')
+  fs.writeFileSync(y, '')
+  await ev(`box.drop([${missing}, ${JSON.stringify(y)}], 1)`)
+  await waitFor('the file after the failed one still moves', async () => (await count()) === 2)
+  fs.rmSync(path.join(tab2, 'y.txt'))
+  await waitFor('back to 1 item', async () => (await count()) === 1)
+  ok('a drop where one file fails moves the rest and repaints')
+
   // Dragging onto another tab: it glows while hovered, flashes on drop, and the refresh the drop causes keeps the flash.
   const tabClass = () => ev('document.querySelectorAll(".tab")[0].className')
   await ev(`document.querySelectorAll('.tab')[0].dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true }))`)
@@ -227,6 +240,24 @@ async function run(main) {
   await waitFor('expanded', async () => !(await ev('document.body.classList.contains("collapsed")')))
   ok(`list view, lock, collapse (${rect.b - rect.t}px tall when collapsed)`)
 
+  // A box saved on a monitor that's gone comes onto a screen that's there, keeps its saved spot, and goes back once the monitor does.
+  const placed = await m(`
+    const { screen } = electron
+    const b = boxes()[0], win = live.get(b.id).win
+    const onScreen = ({ x, y }) => screen.getAllDisplays().some(({ workArea: a }) => x >= a.x && y >= a.y && x < a.x + a.width && y < a.y + a.height)
+    Object.assign(b, { x: -30000, y: -30000 })
+    screen.emit('display-removed')
+    await new Promise((r) => setTimeout(r, 300)) // room for a 'moved' that would overwrite the saved spot
+    const away = { reachable: onScreen(win.getBounds()), kept: b.x === -30000 }
+    const a = screen.getPrimaryDisplay().workArea
+    Object.assign(b, { x: a.x + 100, y: a.y + 100 })
+    screen.emit('display-added')
+    const { x, y } = win.getBounds()
+    return { ...away, back: Math.abs(x - a.x - 100) <= 1 && Math.abs(y - a.y - 100) <= 1 }
+  `)
+  assert.deepEqual(placed, { reachable: true, kept: true, back: true })
+  ok('a box from a missing monitor shows up on screen, and goes back when the monitor returns')
+
   // A box stays under app windows even when it has focus.
   const boxHwnd = await hwndOf('工具箱')
   const coverHwnd = await m(`
@@ -282,6 +313,20 @@ async function run(main) {
   assert.ok(tabDirs.every((d) => !fs.existsSync(d)), 'its tab folders are gone')
   assert.ok(['c.txt', 'x.txt'].every((f) => fs.existsSync(path.join(DESKTOP, f))), 'its items went back to the desktop')
   ok('delete box puts its items back on the desktop')
+
+  // All boxes share one page process: crash it and every box must load again by itself.
+  await m(`
+    const pages = boxes().map((b) => live.get(b.id).win.webContents)
+    const reloaded = Promise.all(pages.map((wc) => new Promise((r) => wc.once('did-finish-load', r))))
+    pages[0].forcefullyCrashRenderer()
+    await Promise.race([reloaded, new Promise((_, no) => setTimeout(() => no(new Error('boxes did not reload')), 8000))])
+  `)
+  for (const name of await m('return boxes().map((b) => b.name)')) {
+    const p = await page(name)
+    await waitFor(`${name} shows its items again`, async () => (await p.evaluate('document.querySelectorAll(".item").length')) > 0)
+    p.close()
+  }
+  ok('boxes reload after their page process crashes')
 }
 
 // DESKBOX_EXE=dist\win-unpacked\DeskBox.exe tests the packaged build instead of the source.

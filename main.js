@@ -1,7 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, shell, dialog, screen, nativeImage } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
-const { category, freePath, shortcutKind, moveInto } = require('./fsutil')
+const { category, freePath, shortcutKind, moveInto, writeAtomic, readJson } = require('./fsutil')
 const { readLnk } = require('./lnk')
 const native = require('./native')
 
@@ -48,7 +48,7 @@ let iconsHidden = false
 let tray
 
 const visible = (f) => !f.startsWith('.') && !HIDDEN.has(f.toLowerCase())
-const save = () => fs.writeFileSync(CONFIG, JSON.stringify({ autoOrganize, startupChosen, keep: [...keep], boxes }, null, 2))
+const save = () => writeAtomic(CONFIG, JSON.stringify({ autoOrganize, startupChosen, keep: [...keep], boxes }, null, 2))
 const toDesktop = (p) => {
   keep.add(path.basename(moveInto(p, DESKTOP)))
   save()
@@ -63,8 +63,14 @@ const shrink = (win) =>
   native.setHeight(win.getNativeWindowHandle(), Math.round(HEADER * screen.getDisplayMatching(win.getBounds()).scaleFactor))
 
 function load() {
-  if (!fs.existsSync(CONFIG)) return []
-  const data = JSON.parse(fs.readFileSync(CONFIG, 'utf8'))
+  const { data, damaged } = readJson(CONFIG)
+  if (damaged)
+    dialog.showMessageBox({
+      type: 'warning',
+      message: data ? '盒子設定檔損壞，已用上次啟動時的備份還原。' : '盒子設定檔損壞，也沒有可用的備份，盒子已重設。',
+      detail: `盒子裡的檔案都還在 ${ROOT}。損壞的設定檔留在 ${CONFIG}.broken。`,
+    })
+  if (!data) return []
   autoOrganize = data.autoOrganize ?? true
   startupChosen = data.startupChosen ?? false
   keep = new Set(data.keep ?? [])
@@ -123,11 +129,31 @@ async function iconOf(p) {
   return iconCache.get(key)
 }
 
+// Where a box goes: its saved spot, unless that's on a monitor that's gone (unplugged, or off at boot) where nobody
+// could reach it; then onto the nearest screen. The saved spot is kept, so the box goes back when the monitor does.
+function placeOf(box) {
+  if (box.x == null) return {} // never moved: Electron centers it
+  const mid = { x: Math.round(box.x + box.width / 2), y: box.y + HEADER / 2 } // middle of the title bar
+  const has = ({ x, y, width, height }) => mid.x >= x && mid.x < x + width && mid.y >= y && mid.y < y + height
+  if (screen.getAllDisplays().some((d) => has(d.workArea))) return { x: box.x, y: box.y }
+  const a = screen.getDisplayNearestPoint(mid).workArea
+  return { x: Math.max(a.x, Math.min(box.x, a.x + a.width - box.width)), y: Math.max(a.y, Math.min(box.y, a.y + a.height - HEADER)) }
+}
+// Window moves made here don't fire 'moved' (that's only the user's drags), so the saved spots stay as they were.
+function placeAll() {
+  for (const box of boxes) {
+    const win = live.get(box.id)?.win
+    const { x, y } = placeOf(box)
+    if (!win || x == null) continue
+    win.setPosition(x, y)
+    if (box.collapsed) shrink(win)
+  }
+}
+
 function openBox(box) {
   for (const t of box.tabs) if (!t.mapped) fs.mkdirSync(t.dir, { recursive: true })
   const win = new BrowserWindow({
-    x: box.x,
-    y: box.y,
+    ...placeOf(box),
     width: box.width,
     height: box.collapsed ? HEADER : box.height,
     frame: false,
@@ -146,6 +172,9 @@ function openBox(box) {
   if (box.collapsed) shrink(win)
   win.loadFile('box.html')
   win.once('ready-to-show', () => iconsHidden || win.showInactive())
+  // All boxes share one page process (see process-per-site), so if it dies they all go blank: load them again.
+  // ponytail: a page that crashes on load would reload every second; add a retry limit if that ever happens.
+  win.webContents.on('render-process-gone', () => setTimeout(() => win.isDestroyed() || win.reload(), 1000))
   const remember = () => {
     const { x, y, width, height } = win.getBounds()
     Object.assign(box, { x, y, width }, box.collapsed ? {} : { height })
@@ -373,14 +402,22 @@ ipcMain.handle('open', (e, p) => shell.openPath(p))
 ipcMain.handle('drop', (e, paths, tab, before) => {
   const box = boxOf(e.sender)
   const t = box.tabs[tab ?? box.active]
-  const moved = paths.map((p) => path.basename(moveInto(p, t.dir)))
-  if (before == null) return
-  const rest = ordered(t, fs.readdirSync(t.dir).filter(visible)).filter((f) => !moved.includes(f))
-  const i = rest.indexOf(path.basename(before))
-  rest.splice(i < 0 ? rest.length : i, 0, ...moved)
-  t.order = rest
-  save()
-  notify(box) // a reorder inside one folder changes no files, so no watcher fires
+  const moved = []
+  for (const p of paths) {
+    try {
+      moved.push(path.basename(moveInto(p, t.dir)))
+    } catch {} // in use or gone: it stays where it was, the others still move
+  }
+  if (before != null) {
+    const rest = ordered(t, fs.readdirSync(t.dir).filter(visible)).filter((f) => !moved.includes(f))
+    const i = rest.indexOf(path.basename(before))
+    rest.splice(i < 0 ? rest.length : i, 0, ...moved)
+    t.order = rest
+    save()
+  }
+  // Repaint even when no file changed (a reorder in one folder, or nothing could move): no watcher fires then, and
+  // the renderer has already taken the dragged icons out or moved them.
+  notify(box)
 })
 
 ipcMain.handle('switch-tab', (e, i) => {
@@ -473,6 +510,7 @@ app.whenReady().then(async () => {
     native.setDesktopIconsVisible(true) // in case a previous run died while they were hidden
     native.onDesktopDoubleClick(toggleDesktop)
   }
+  for (const e of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(e, placeAll)
   // ponytail: only the user's own desktop; shortcuts installers drop on the all-users desktop need admin to move
   fs.watch(DESKTOP, () => scheduleSweep())
   scheduleSweep(0)
@@ -513,4 +551,8 @@ app.whenReady().then(async () => {
       { label: '結束', click: () => app.quit() },
     ]),
   )
+}).catch((e) => {
+  // Otherwise it keeps running with no box and no tray icon, and holds the single-instance lock so it can't be reopened.
+  dialog.showErrorBox('DeskBox 無法啟動', String(e?.stack ?? e))
+  app.exit(1)
 })
