@@ -40,16 +40,18 @@ function freePath(dir, base) {
   return p
 }
 
-// Moves a file or folder into dir. Never overwrites, works across drives.
-function moveInto(src, dir) {
+// Moves a file or folder into dir. Never overwrites, works across drives. On one drive it's an instant rename, done
+// before this returns its promise; across drives it's a copy, done in the background so a big folder doesn't freeze
+// the app (or the mouse: the desktop double-click hook runs on the same thread).
+async function moveInto(src, dir) {
   if (path.resolve(path.dirname(src)).toLowerCase() === path.resolve(dir).toLowerCase()) return src
   const dest = freePath(dir, path.basename(src))
   try {
     fs.renameSync(src, dest)
   } catch (e) {
     if (e.code !== 'EXDEV') throw e
-    fs.cpSync(src, dest, { recursive: true, force: false, errorOnExist: true })
-    fs.rmSync(src, { recursive: true })
+    await fs.promises.cp(src, dest, { recursive: true, force: false, errorOnExist: true })
+    await fs.promises.rm(src, { recursive: true })
   }
   return dest
 }

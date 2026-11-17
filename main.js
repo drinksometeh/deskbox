@@ -49,9 +49,12 @@ let tray
 
 const visible = (f) => !f.startsWith('.') && !HIDDEN.has(f.toLowerCase())
 const save = () => writeAtomic(CONFIG, JSON.stringify({ autoOrganize, startupChosen, keep: [...keep], boxes }, null, 2))
-const toDesktop = (p) => {
-  keep.add(path.basename(moveInto(p, DESKTOP)))
+// Marked as put there on purpose before the move starts: one across drives takes a while, and a sweep meanwhile
+// mustn't file the half-copied item straight back.
+const toDesktop = async (p) => {
+  keep.add(path.basename(freePath(DESKTOP, path.basename(p)))) // the name moveInto is about to give it
   save()
+  await moveInto(p, DESKTOP)
 }
 const readText = (p) => {
   const buf = fs.readFileSync(p)
@@ -242,11 +245,11 @@ function addTab(box, tab) {
 }
 
 // Moves a tab's items to the desktop; optionally removes its folder once empty. Mapped folders are never touched.
-function emptyTab(t, removeFolder) {
+async function emptyTab(t, removeFolder) {
   if (t.mapped || !fs.existsSync(t.dir)) return
   for (const f of fs.readdirSync(t.dir).filter(visible)) {
     try {
-      toDesktop(path.join(t.dir, f))
+      await toDesktop(path.join(t.dir, f))
     } catch {} // in use: leave it where it is
   }
   if (removeFolder && !fs.readdirSync(t.dir).some(visible)) fs.rmSync(t.dir, { recursive: true })
@@ -259,7 +262,7 @@ async function deleteTab(box, i) {
   const { watchers } = live.get(box.id)
   watchers.get(t.dir)?.close() // Windows keeps watched folders locked
   watchers.delete(t.dir)
-  emptyTab(t, true)
+  await emptyTab(t, true)
   box.tabs.splice(i, 1)
   box.active = 0
   save()
@@ -269,7 +272,7 @@ async function deleteTab(box, i) {
 async function deleteBox(box) {
   if (!(await confirm(box, `刪除盒子「${box.name}」？`, '裡面的東西會先全部移回桌面，映射的資料夾不會被動到。', '刪除'))) return
   closeBox(box)
-  box.tabs.forEach((t) => emptyTab(t, true))
+  for (const t of box.tabs) await emptyTab(t, true)
   boxes = boxes.filter((b) => b !== box)
   save()
 }
@@ -329,21 +332,51 @@ function tabFor(kind) {
   return box.tabs.find((t) => t.kind === kind)
 }
 
+// Desktop files filed lately: name -> { path, mtimeMs, at }. The same name turning up on the desktop again soon is most
+// likely a program saving to the path it still remembers (Notepad, VS Code): the new save takes the place of the copy
+// filed before, which goes to the recycle bin, instead of piling up as "todo (2).txt". Only if that copy is untouched
+// since. Never folders: a second "New folder" is a different folder.
+// ponytail: kept in memory, so a save after DeskBox restarts still makes a "(2)"; persist it if that comes up.
+const filed = new Map()
+const RESAVE = 60 * 60 * 1000 // replace within an hour of the last time that name was filed
+
+async function fileItem(p) {
+  const name = path.basename(p)
+  const prev = filed.get(name)
+  let dir
+  if (prev && Date.now() - prev.at < RESAVE && fs.statSync(p).isFile()) {
+    if (fs.statSync(prev.path, { throwIfNoEntry: false })?.mtimeMs === prev.mtimeMs) {
+      try {
+        await shell.trashItem(prev.path)
+        dir = path.dirname(prev.path)
+      } catch {} // the old copy is open somewhere: keep both
+    }
+  }
+  const dest = await moveInto(p, dir ?? tabFor(kindOf(p)).dir)
+  const stat = fs.statSync(dest)
+  if (stat.isFile()) filed.set(name, { path: dest, mtimeMs: stat.mtimeMs, at: Date.now() })
+}
+
+const moving = new Set() // desktop items being filed right now: across drives that's a copy, and sweeps can overlap
+
 // Files every desktop item into its box. Returns how many were left behind (in use or still being written).
-function sweepDesktop() {
+async function sweepDesktop() {
   let left = 0
   const files = fs.readdirSync(DESKTOP).filter(visible)
   keep = new Set([...keep].filter((f) => files.includes(f))) // forget items that have left the desktop
   save()
   for (const f of files) {
-    if (keep.has(f)) continue
     const p = path.join(DESKTOP, f)
+    if (keep.has(f) || moving.has(p)) continue
+    moving.add(p)
     try {
       const { mtimeMs, birthtimeMs } = fs.statSync(p)
       if (STILL_WRITING.test(f) || Date.now() - Math.max(mtimeMs, birthtimeMs) < GRACE) throw new Error('busy')
-      moveInto(p, tabFor(kindOf(p)).dir)
+      await fileItem(p)
     } catch {
       left++
+    } finally {
+      moving.delete(p)
     }
   }
   return left
@@ -352,7 +385,7 @@ function sweepDesktop() {
 let sweepTimer
 function scheduleSweep(delay = 1000) {
   clearTimeout(sweepTimer)
-  sweepTimer = setTimeout(() => autoOrganize && sweepDesktop() && scheduleSweep(GRACE), delay) // retry leftovers later
+  sweepTimer = setTimeout(() => autoOrganize && sweepDesktop().then((left) => left && scheduleSweep(GRACE)), delay) // retry leftovers later
 }
 
 async function organizeDesktop() {
@@ -360,7 +393,7 @@ async function organizeDesktop() {
   if (!count) return
   const detail = '遊戲捷徑→「游戏」，其他捷徑→「应用」，檔案和資料夾按類型→「文档」。隨時能用盒子選單的「全部移回桌面」放回去。'
   if (!(await confirm(null, `把桌面上的 ${count} 個項目收進盒子？`, detail, '整理'))) return
-  const left = sweepDesktop()
+  const left = await sweepDesktop()
   if (left) dialog.showMessageBox({ message: `有 ${left} 個項目正在使用中，留在桌面上。` })
 }
 
@@ -399,13 +432,13 @@ ipcMain.handle('list', async (e, tab) => {
 ipcMain.handle('open', (e, p) => shell.openPath(p))
 
 // before: path of the item the drop landed in front of, '' for the end, undefined when dropped on a tab (no position).
-ipcMain.handle('drop', (e, paths, tab, before) => {
+ipcMain.handle('drop', async (e, paths, tab, before) => {
   const box = boxOf(e.sender)
   const t = box.tabs[tab ?? box.active]
   const moved = []
   for (const p of paths) {
     try {
-      moved.push(path.basename(moveInto(p, t.dir)))
+      moved.push(path.basename(await moveInto(p, t.dir)))
     } catch {} // in use or gone: it stays where it was, the others still move
   }
   if (before != null) {
@@ -450,7 +483,7 @@ ipcMain.handle('trash', (e, paths) => trash(paths))
 ipcMain.handle('item-menu', (e, paths) => {
   const n = paths.length > 1 ? `（${paths.length} 個）` : ''
   Menu.buildFromTemplate([
-    { label: `移回桌面${n}`, click: () => paths.forEach(toDesktop) },
+    { label: `移回桌面${n}`, click: () => paths.forEach((p) => toDesktop(p).catch(() => {})) }, // in use: stays
     { label: '在檔案總管中顯示', click: () => shell.showItemInFolder(paths[0]) },
     { type: 'separator' },
     { label: `刪除（移到資源回收筒）${n}`, click: () => trash(paths) },

@@ -301,6 +301,18 @@ async function run(main) {
   assert.ok(fs.existsSync(path.join(DESKTOP, 'b.txt')), 'item moved back on purpose stays on the desktop')
   ok('auto-organize: game / document / folder filed, moved-back item left alone')
 
+  // Saved again to the desktop (an editor that still remembers the path): it replaces the copy filed before, no
+  // "notes (2).txt". A folder made again with the same name is a different folder: it gets a name of its own.
+  fs.writeFileSync(path.join(DESKTOP, 'notes.txt'), 'v2')
+  fs.mkdirSync(path.join(DESKTOP, 'folderX'))
+  await waitFor('desktop sorted again', () => ['notes.txt', 'folderX'].every((f) => !fs.existsSync(path.join(DESKTOP, f))), 25000)
+  const tabOf = (kind) => m(`return boxes().flatMap((b) => b.tabs).find((t) => t.kind === ${JSON.stringify(kind)}).dir`)
+  const docs = await tabOf('文檔')
+  assert.deepEqual(fs.readdirSync(docs), ['notes.txt'])
+  assert.equal(fs.readFileSync(path.join(docs, 'notes.txt'), 'utf8'), 'v2')
+  assert.deepEqual(fs.readdirSync(await tabOf('目錄')).sort(), ['folderX', 'folderX (2)'])
+  ok('a file saved to the desktop again replaces its filed copy; a same-name folder is kept apart')
+
   // Last of the window checks: after an un-minimize, Windows' focus-stealing guard blocks programmatic focus().
   await m('live.get(boxes()[0].id).win.minimize()')
   await waitFor('box un-minimizes itself', async () => !(await m('return live.get(boxes()[0].id).win.isMinimized()')))

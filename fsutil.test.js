@@ -28,7 +28,7 @@ test('a damaged settings file falls back to the last good copy', () => {
   fs.rmSync(tmp, { recursive: true })
 })
 
-test('moveInto never overwrites and leaves nothing behind', () => {
+test('moveInto never overwrites and leaves nothing behind', async () => {
   const tmp = tmpDir()
   const from = path.join(tmp, 'from')
   const to = path.join(tmp, 'to')
@@ -37,14 +37,35 @@ test('moveInto never overwrites and leaves nothing behind', () => {
   fs.writeFileSync(path.join(from, 'a.txt'), 'new')
   fs.writeFileSync(path.join(to, 'a.txt'), 'old')
 
-  const dest = moveInto(path.join(from, 'a.txt'), to)
+  const dest = await moveInto(path.join(from, 'a.txt'), to)
 
   assert.strictEqual(dest, path.join(to, 'a (2).txt'))
   assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'new')
   assert.strictEqual(fs.readFileSync(path.join(to, 'a.txt'), 'utf8'), 'old')
   assert.ok(!fs.existsSync(path.join(from, 'a.txt')))
-  assert.strictEqual(moveInto(dest, to), dest) // already in place: no-op
+  assert.strictEqual(await moveInto(dest, to), dest) // already in place: no-op
   fs.rmSync(tmp, { recursive: true })
+})
+
+// Needs this repo and the temp folder on different drives (here D: and C:); skipped otherwise.
+const otherDrive = path.parse(__dirname).root.toLowerCase() !== path.parse(os.tmpdir()).root.toLowerCase()
+test('moving a folder across drives keeps the app responsive', { skip: !otherDrive && 'repo and temp on one drive' }, async () => {
+  const src = fs.mkdtempSync(path.join(__dirname, '.xdrive-')) // in the repo, so on the other drive; removed below
+  const to = tmpDir()
+  try {
+    const big = Buffer.alloc(1 << 20)
+    for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(src, `${i}.bin`), big)
+    let ticks = 0
+    const timer = setInterval(() => ticks++, 1)
+    const dest = await moveInto(src, to)
+    clearInterval(timer)
+    assert.ok(ticks > 0, 'the event loop kept running during the copy')
+    assert.strictEqual(fs.readdirSync(dest).length, 40)
+    assert.ok(!fs.existsSync(src))
+  } finally {
+    fs.rmSync(src, { recursive: true, force: true })
+    fs.rmSync(to, { recursive: true, force: true })
+  }
 })
 
 test('category sorts desktop items by type', () => {
