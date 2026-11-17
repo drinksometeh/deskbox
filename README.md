@@ -13,14 +13,20 @@ Windows 桌面整理盒子，類似 Coodesker／Fences。用 Electron 寫成，W
 
 **解除安裝前**，先在每個盒子的選單按「全部移回桌面」。解除安裝不會動到 `%USERPROFILE%\DeskBox\`，沒移回去的東西會留在那個資料夾裡，不會消失，但桌面上看不到。
 
-## 使用
+**桌面有用 OneDrive 同步的話**（很多 Windows 11 電腦預設如此），自動整理會把檔案從 OneDrive 的桌面搬到 `%USERPROFILE%\DeskBox\`，OneDrive 會當成刪除，其他裝置上的桌面也會少掉這些檔案。這種情況請先關掉工作列圖示選單的「自動整理桌面」。
+
+## 安裝
+
+到 [Releases](https://github.com/drinksometeh/deskbox/releases) 下載 `DeskBox-Setup-x.x.x.exe` 執行即可，裝好會自動開啟，之後開機自動啟動。安裝檔沒有數位簽章，Windows 可能跳出「Windows 已保護您的電腦」，按「其他資訊」→「仍要執行」。
+
+## 開發
 
 ```bash
 npm install
 npm start
 ```
 
-測試：`npm test`
+測試：`npm test`（單元測試）、`npm run e2e`（端對端，會開一個獨立的 DeskBox 用暫存資料夾測試，不會動到真的桌面）
 
 ## 授權
 
