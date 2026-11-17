@@ -521,8 +521,10 @@ app.whenReady().then(async () => {
     startupChosen = true
     save()
   }
-  dragIcon = await app.getFileIcon(process.execPath)
-  tray = new Tray(dragIcon)
+  // The app's own icon file: asking Windows for the exe's icon (getFileIcon) can hand back a stale generic one from its icon cache.
+  const icon = path.join(__dirname, 'build', 'icon.ico')
+  dragIcon = nativeImage.createFromPath(icon).resize({ width: 32 })
+  tray = new Tray(icon)
   tray.setToolTip('DeskBox')
   tray.setContextMenu(
     Menu.buildFromTemplate([

@@ -34,6 +34,7 @@
       "fsutil.js",
       "lnk.js",
       "native.js",
+      "build/icon.ico",
       "package.json"
     ],
     "asarUnpack": [
