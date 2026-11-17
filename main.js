@@ -543,6 +543,8 @@ app.whenReady().then(async () => {
       {
         label: '開機自動啟動',
         type: 'checkbox',
+        // A run from source would point Windows at the source copy (same entry name), so only the installed app sets it.
+        enabled: app.isPackaged,
         // openAtLogin ignores LOGIN.name on Windows, so look for our entry in launchItems instead
         checked: !!app.getLoginItemSettings(LOGIN).launchItems?.some((i) => i.name === LOGIN.name && i.enabled),
         click: (item) => app.setLoginItemSettings({ ...LOGIN, openAtLogin: item.checked }),

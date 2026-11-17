@@ -11,6 +11,8 @@ Windows 桌面整理盒子，類似 Coodesker／Fences。用 Electron 寫成，W
 
 盒子裡的東西是真的檔案，放在 `%USERPROFILE%\DeskBox\` 底下，盒子選單的「全部移回桌面」可以放回去。
 
+**解除安裝前**，先在每個盒子的選單按「全部移回桌面」。解除安裝不會動到 `%USERPROFILE%\DeskBox\`，沒移回去的東西會留在那個資料夾裡，不會消失，但桌面上看不到。
+
 ## 使用
 
 ```bash
