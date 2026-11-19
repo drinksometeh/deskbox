@@ -528,6 +528,10 @@ ipcMain.handle('box-menu', (e) => {
 // one renderer process: ~300 MB -> ~170 MB. ponytail: one box's renderer crashing now blanks them all.
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('process-per-site') // every box is file://box.html, so one site, one process
+// Chromium stops painting windows it thinks are covered, and a transparent window that doesn't paint is blank. Boxes
+// live under every app, so they're "covered" all the time, and that state got stuck on "hidden" (all boxes blank on an
+// empty desktop) until the window was hidden and shown again. The pages are static: let them paint regardless.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
 if (!app.requestSingleInstanceLock()) app.exit()
 app.on('window-all-closed', () => {}) // keep running in the tray

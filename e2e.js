@@ -274,8 +274,17 @@ async function run(main) {
   const z = zOrder()
   assert.ok(z.indexOf(boxHwnd) > z.indexOf(coverHwnd), 'focused box is still below the app window')
   assert.equal(await m('return live.get(boxes()[0].id).win.isFocused()'), true, 'and it has keyboard focus')
+  // Fully covered, a page Chromium tracks for occlusion turns "hidden" and stops painting; that state can get stuck and
+  // leave a box blank on an empty desktop. Boxes opt out, so they stay "visible".
+  await m(`
+    const b = live.get(boxes()[0].id).win.getBounds()
+    globalThis.__cover.setBounds({ x: b.x - 50, y: b.y - 50, width: b.width + 100, height: b.height + 100 })
+    globalThis.__cover.focus()
+    await new Promise((r) => setTimeout(r, 1500))
+  `)
+  assert.equal(await ev('document.visibilityState'), 'visible', 'a fully covered box still counts as visible')
   await m('globalThis.__cover.destroy()')
-  ok('box stays behind app windows even when clicked/focused')
+  ok('box stays behind app windows even when clicked/focused, and keeps painting when fully covered')
 
   await ev('box.boxMenu()')
   await clickMenu('新增資料夾映射分頁')
